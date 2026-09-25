@@ -1,0 +1,13 @@
+{
+  "name": "prismcamview",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local CCTV wall with an embedded, updatable go2rtc restreamer.",
+  "scripts": {
+    "start": "node server/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
