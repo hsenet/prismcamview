@@ -135,6 +135,39 @@ function authorized(req) {
   return tokenMatches(tokenFrom(req));
 }
 
+const authFailures = new Map();
+
+function clientAddress(req) {
+  return req.socket.remoteAddress || 'unknown';
+}
+
+function recentFailures(req) {
+  const now = Date.now();
+  const recent = (authFailures.get(clientAddress(req)) || []).filter((time) => now - time < 60_000);
+  authFailures.set(clientAddress(req), recent);
+  return recent;
+}
+
+function tooManyFailures(req) {
+  return recentFailures(req).length >= 5;
+}
+
+function recordFailure(req) {
+  const recent = recentFailures(req);
+  recent.push(Date.now());
+  authFailures.set(clientAddress(req), recent);
+}
+
+function clearFailures(req) {
+  authFailures.delete(clientAddress(req));
+}
+
+function clientError(error) {
+  const message = error?.message || 'Request failed';
+  if (/127\.0\.0\.1|go2rtc|SHA-256|\/api\b|EACCES|ENOENT/i.test(message)) return 'Request failed';
+  return message;
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -174,14 +207,21 @@ async function handleApi(req, res, pathname) {
       return;
     }
     res.setHeader('Set-Cookie', sessionCookie());
-    json(res, 200, { token: config.token });
+    json(res, 200, { ok: true });
+    return;
+  }
+
+  if (tooManyFailures(req)) {
+    json(res, 429, { error: 'Too many sign-in attempts. Wait a minute.' });
     return;
   }
 
   if (!authorized(req)) {
+    recordFailure(req);
     json(res, 401, { error: 'Sign in with the API token' });
     return;
   }
+  clearFailures(req);
   res.setHeader('Set-Cookie', sessionCookie());
 
   if (req.method === 'GET' && pathname === '/api/v1/presets') {
@@ -198,7 +238,8 @@ async function handleApi(req, res, pathname) {
     try {
       json(res, 200, await go2rtc.update());
     } catch (error) {
-      json(res, 502, { error: error.message });
+      console.error(error);
+      json(res, 502, { error: 'The restreamer update failed' });
     }
     return;
   }
@@ -448,18 +489,26 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/rtc' || url.pathname.startsWith('/rtc/')) {
       const target = new URL(upstreamPath(url), 'http://localhost');
       const access = playbackAccess(req.method, target.pathname);
+      if (access === 'private' && tooManyFailures(req)) {
+        res.writeHead(429, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Too many sign-in attempts. Wait a minute.');
+        return;
+      }
       if (!access || (access === 'private' && !authorized(req))) {
+        if (access === 'private') recordFailure(req);
         res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('Sign in with the API token');
         return;
       }
+      if (access === 'private') clearFailures(req);
       req.url = `${target.pathname}${target.search}`;
       proxyWeb(req, res);
       return;
     }
     await handleStatic(req, res, url.pathname);
   } catch (error) {
-    if (!res.headersSent) json(res, 400, { error: error.message || 'Request failed' });
+    console.error(error);
+    if (!res.headersSent) json(res, 400, { error: clientError(error) });
   }
 });
 

@@ -14,7 +14,7 @@ Authorization: Bearer <token>
 
 The token is created in `data/config.yaml` on the PC that runs PrismCam. RTSP passwords are never included in a response.
 
-`GET /api/v1/session` returns `{ "token" }` only when the request comes from `127.0.0.1` and the same site. A page on another website cannot read it. A successful sign-in also sets an `HttpOnly` `SameSite=Strict` cookie named `prism_session`. The browser player sends that cookie when it opens a stream. Other sites do not.
+`GET /api/v1/session` returns `{ "ok": true }` and sets an `HttpOnly` `SameSite=Strict` cookie named `prism_session` only when the request comes from `127.0.0.1` and the same site. The token is not included in that response. A page on another website cannot read it. Other devices send the bearer token from `data/config.yaml`. A successful request sets the same cookie, and the browser keeps that instead of storing the token in JavaScript.
 
 The player scripts are public. Stream media under `/rtc/api/` requires the bearer token or the cookie. Creating, deleting, or listing streams is refused. The embedded restreamer itself listens only on `127.0.0.1` and requires its own password, which the Node server holds.
 

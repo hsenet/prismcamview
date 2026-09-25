@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Local CCTV wall with an embedded, updatable go2rtc restreamer.",
   "scripts": {
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "lint": "node --check server/index.js && node --check server/cameras.js && node --check server/go2rtc.js && node --check server/config.js && node --check server/presets.js && node --check server/yaml.js"
   },
   "engines": {
     "node": ">=20"

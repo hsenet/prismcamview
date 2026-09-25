@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { parse, stringify } from './yaml.js';
@@ -92,6 +92,15 @@ function defaultConfig() {
   };
 }
 
+export async function writePrivate(file, contents) {
+  await writeFile(file, contents, { mode: 0o600 });
+  try {
+    await chmod(file, 0o600);
+  } catch {
+    /* Windows does not apply Unix file modes */
+  }
+}
+
 export async function loadConfig() {
   await mkdir(DATA_DIR, { recursive: true });
   let created = false;
@@ -101,7 +110,7 @@ export async function loadConfig() {
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
     const fresh = defaultConfig();
-    await writeFile(CONFIG_PATH, stringify(fresh));
+    await writePrivate(CONFIG_PATH, stringify(fresh));
     created = true;
     file = stringify(fresh);
   }
@@ -113,7 +122,7 @@ export async function loadConfig() {
   };
   if (!config.token) {
     config.token = randomBytes(24).toString('hex');
-    await writeFile(CONFIG_PATH, stringify(config));
+    await writePrivate(CONFIG_PATH, stringify(config));
     created = true;
   }
   const match = config.listen.match(/^(.*):(\d+)$/);

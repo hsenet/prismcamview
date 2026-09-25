@@ -16,6 +16,7 @@ import {
   PINNED_GO2RTC,
   PINNED_GO2RTC_SHA256,
   VERSION_PATH,
+  writePrivate,
 } from './config.js';
 
 const execFileAsync = promisify(execFile);
@@ -370,7 +371,7 @@ export function createGo2rtc() {
   }
 
   async function writeYaml(document) {
-    await writeFile(GO2RTC_CONFIG_PATH, stringify(document));
+    await writePrivate(GO2RTC_CONFIG_PATH, stringify(document));
   }
 
   async function info() {

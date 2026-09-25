@@ -1,5 +1,5 @@
 const state = {
-  token: localStorage.getItem('prism.token') || '',
+  token: '',
   view: 'live',
   cameras: [],
   layout: localStorage.getItem('prism.layout') || '4',
@@ -33,15 +33,14 @@ async function api(path, options = {}) {
     method: options.method || 'GET',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${state.token}`,
+      ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
   const data = await response.json().catch(() => ({}));
   if (response.status === 401) {
     state.token = '';
-    localStorage.removeItem('prism.token');
-    renderSetup();
+    if (!options.quiet) renderSetup();
     throw new Error(data.error || 'Sign in required');
   }
   if (!response.ok) throw new Error(data.error || 'Request failed');
@@ -433,13 +432,7 @@ function adminView() {
         text('div', info.updateAvailable ? `Version ${info.latest} is available.` : 'This build is current.', { class: 'muted' }),
       ]),
       el('div', { class: 'inline' }, [
-        el('button', {
-          type: 'button',
-          onclick: async () => {
-            try { await navigator.clipboard.writeText(state.token); showBanner('API token copied.'); }
-            catch { showBanner(state.token); }
-          },
-        }, ['Copy API token']),
+        text('div', 'The API token stays in data/config.yaml on this computer.', { class: 'muted' }),
         update,
       ]),
     ]),
@@ -503,12 +496,13 @@ function renderSetup() {
   button.addEventListener('click', async () => {
     state.token = token.value.trim();
     if (!state.token) return;
-    localStorage.setItem('prism.token', state.token);
     try {
-      await refresh();
+      await refresh({ quiet: true });
+      state.token = '';
       shell();
       render();
     } catch (error) {
+      state.token = '';
       note.textContent = error.message;
     }
   });
@@ -524,10 +518,10 @@ function renderSetup() {
   ]));
 }
 
-async function refresh() {
+async function refresh(options = {}) {
   const [list, runtime] = await Promise.all([
-    api('/api/v1/cameras'),
-    api('/api/v1/go2rtc').catch(() => null),
+    api('/api/v1/cameras', options),
+    api('/api/v1/go2rtc', options).catch(() => null),
   ]);
   state.cameras = list.cameras || [];
   state.go2rtc = runtime;
@@ -542,27 +536,11 @@ document.addEventListener('keydown', (event) => {
 
 async function boot() {
   shell();
-  if (!state.token) {
-    try {
-      const response = await fetch('/api/v1/session');
-      if (response.ok) {
-        const data = await response.json();
-        state.token = data.token;
-        localStorage.setItem('prism.token', state.token);
-      }
-    } catch {
-      /* setup form handles a missing server */
-    }
-  }
-  if (!state.token) {
-    renderSetup();
-    return;
-  }
   try {
-    await refresh();
+    await fetch('/api/v1/session');
+    await refresh({ quiet: true });
     render();
-  } catch (error) {
-    showBanner(error.message);
+  } catch {
     renderSetup();
   }
 }

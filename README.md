@@ -2,6 +2,10 @@
 
 A local CCTV wall. An embedded [go2rtc](https://github.com/AlexxIT/go2rtc) process pulls your RTSP cameras, and the browser plays them with WebRTC (then MSE, then HLS). The same HTTP API is what a later Android or iOS app will use.
 
+## Security
+
+Keep PrismCam on your own network. It uses HTTP, so put a TLS reverse proxy in front before anyone reaches it from the internet. The browser API is same-origin only: another website cannot call it or read the API token. Docker publishes ports `8787` and `8555` on the host so phones on the LAN can connect. That bind is intentional, and it is not limited to localhost.
+
 ## Run
 
 ```bash

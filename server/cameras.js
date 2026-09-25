@@ -1,6 +1,6 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { parse, stringify } from './yaml.js';
-import { CAMERAS_PATH } from './config.js';
+import { CAMERAS_PATH, writePrivate } from './config.js';
 import {
   CAMERA_TYPES,
   buildSources,
@@ -115,7 +115,7 @@ export async function readCameras() {
 
 export async function writeCameras(cameras) {
   const body = stringify({ cameras });
-  await writeFile(CAMERAS_PATH, body);
+  await writePrivate(CAMERAS_PATH, body);
 }
 
 export function streamMap(cameras) {
