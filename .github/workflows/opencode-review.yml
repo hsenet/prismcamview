@@ -1,0 +1,37 @@
+name: opencode-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: opencode-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: anomalyco/opencode/github@latest
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_GH_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: opencode-go/qwen3.7-plus
+          use_github_token: true
+          prompt: |
+            Review this pull request for PrismCam, a local CCTV wall that restreams RTSP cameras through embedded go2rtc.
+            - Look for bugs, security issues, and broken behavior
+            - Flag any camera passwords, API tokens, or other secrets that should not be committed
+            - Check authentication, RTSP URL handling, and stream reload paths
+            - Suggest concrete improvements
+            Do not change files. Post the review as comments on the pull request.
