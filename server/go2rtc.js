@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
@@ -13,6 +14,7 @@ import {
   GO2RTC_CONFIG_PATH,
   GO2RTC_EXE,
   PINNED_GO2RTC,
+  PINNED_GO2RTC_SHA256,
   VERSION_PATH,
 } from './config.js';
 
@@ -67,6 +69,13 @@ async function downloadFile(url, destination) {
   await pipeline(response.body, createWriteStream(destination));
 }
 
+const MAX_RESTARTS = 5;
+
+async function sha256File(file) {
+  const data = await readFile(file);
+  return createHash('sha256').update(data).digest('hex');
+}
+
 export function createGo2rtc() {
   let child = null;
   let stopping = false;
@@ -74,6 +83,11 @@ export function createGo2rtc() {
   let latestCache = { at: 0, tag: '' };
   let chain = Promise.resolve();
   let updateLock = false;
+  let restarts = 0;
+  let restartTimer = null;
+  const apiUser = 'prism';
+  const apiPassword = randomBytes(24).toString('hex');
+  const basicAuth = `Basic ${Buffer.from(`${apiUser}:${apiPassword}`).toString('base64')}`;
 
   function queue(task) {
     const run = chain.then(task, task);
@@ -107,22 +121,53 @@ export function createGo2rtc() {
     return version;
   }
 
+  async function expectedDigest(tag) {
+    if (tag === PINNED_GO2RTC) {
+      const pinned = PINNED_GO2RTC_SHA256[GO2RTC_ASSET];
+      if (!pinned) throw new Error(`No pinned SHA-256 for ${GO2RTC_ASSET}`);
+      return pinned;
+    }
+    const response = await fetch(`https://api.github.com/repos/AlexxIT/go2rtc/releases/tags/${encodeURIComponent(tag)}`, {
+      headers: {
+        'User-Agent': 'prismcamview',
+        Accept: 'application/vnd.github+json',
+      },
+    });
+    if (!response.ok) throw new Error(`GitHub returned ${response.status}`);
+    const body = await response.json();
+    const asset = (body.assets || []).find((item) => item.name === GO2RTC_ASSET);
+    const digest = String(asset?.digest || '');
+    if (!digest.startsWith('sha256:')) throw new Error(`No SHA-256 digest published for ${GO2RTC_ASSET}`);
+    return digest.slice('sha256:'.length);
+  }
+
   async function installRelease(tag, { replace }) {
     const url = `https://github.com/AlexxIT/go2rtc/releases/download/${tag}/${GO2RTC_ASSET}`;
     const staging = path.join(BIN_DIR, 'staging');
     const downloadPath = path.join(BIN_DIR, GO2RTC_ARCHIVE ? 'go2rtc.zip' : path.basename(GO2RTC_EXE));
     const binaryName = path.basename(GO2RTC_EXE);
+    const want = (await expectedDigest(tag)).toLowerCase();
     await rm(staging, { recursive: true, force: true });
     await mkdir(staging, { recursive: true });
     console.log(`[go2rtc] downloading ${tag} (${GO2RTC_ASSET})`);
     let exe;
     if (GO2RTC_ARCHIVE) {
       await downloadFile(url, downloadPath);
+      const got = await sha256File(downloadPath);
+      if (got !== want) {
+        await rm(downloadPath, { force: true });
+        throw new Error(`SHA-256 mismatch for ${GO2RTC_ASSET}`);
+      }
       await unzip(downloadPath, staging);
       exe = await findBinary(staging, binaryName);
     } else {
       exe = path.join(staging, binaryName);
       await downloadFile(url, exe);
+      const got = await sha256File(exe);
+      if (got !== want) {
+        await rm(staging, { recursive: true, force: true });
+        throw new Error(`SHA-256 mismatch for ${GO2RTC_ASSET}`);
+      }
     }
     if (!exe) throw new Error(`Downloaded release did not contain ${binaryName}`);
     if (process.platform !== 'win32') await chmod(exe, 0o755);
@@ -164,7 +209,14 @@ export function createGo2rtc() {
     return latestCache.tag;
   }
 
+  function clearRestart() {
+    if (!restartTimer) return;
+    clearTimeout(restartTimer);
+    restartTimer = null;
+  }
+
   function start() {
+    clearRestart();
     if (child) return Promise.resolve();
     stopping = false;
     return new Promise((resolve, reject) => {
@@ -190,14 +242,22 @@ export function createGo2rtc() {
           return;
         }
         if (!proc.intentional && !stopping) {
-          console.error('[go2rtc] exited, restarting in 1s');
-          setTimeout(() => {
+          restarts += 1;
+          if (restarts > MAX_RESTARTS) {
+            console.error(`[go2rtc] stopped after ${MAX_RESTARTS} crashes`);
+            return;
+          }
+          const delay = Math.min(30_000, 1000 * 2 ** (restarts - 1));
+          console.error(`[go2rtc] exited, restarting in ${delay / 1000}s (${restarts}/${MAX_RESTARTS})`);
+          restartTimer = setTimeout(() => {
+            restartTimer = null;
             start().catch((error) => console.error('[go2rtc]', error.message));
-          }, 1000);
+          }, delay);
         }
       });
       waitReady().then(() => {
         settled = true;
+        restarts = 0;
         resolve();
       }).catch((error) => {
         proc.intentional = true;
@@ -210,8 +270,11 @@ export function createGo2rtc() {
   async function waitReady() {
     for (let i = 0; i < 50; i += 1) {
       try {
-        const response = await fetch(`${API}/api`, { signal: AbortSignal.timeout(500) });
-        if (response.ok || response.status === 401) return;
+        const response = await fetch(`${API}/api`, {
+          headers: { Authorization: basicAuth },
+          signal: AbortSignal.timeout(500),
+        });
+        if (response.ok) return;
       } catch {
         /* still starting */
       }
@@ -222,6 +285,7 @@ export function createGo2rtc() {
 
   function stop() {
     stopping = true;
+    clearRestart();
     const proc = child;
     child = null;
     if (!proc) return Promise.resolve();
@@ -256,6 +320,7 @@ export function createGo2rtc() {
   async function request(method, pathname, { timeout = 8000, raw = false } = {}) {
     const response = await fetch(`${API}${pathname}`, {
       method,
+      headers: { Authorization: basicAuth },
       signal: AbortSignal.timeout(timeout),
     });
     if (raw) {
@@ -356,5 +421,7 @@ export function createGo2rtc() {
     snapshot,
     writeYaml,
     get running() { return Boolean(child); },
+    get apiPassword() { return apiPassword; },
+    get basicAuth() { return basicAuth; },
   };
 }

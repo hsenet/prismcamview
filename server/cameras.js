@@ -31,9 +31,13 @@ function uniqueId(name, cameras, preferred) {
 
 function restoreSecret(url, previous) {
   if (!url || !url.includes('••••') || !previous) return url;
+  const nextHost = hostOf(url.replaceAll('••••', 'x'));
+  const prevHost = hostOf(previous);
+  if (!nextHost || nextHost !== prevHost) return url;
   const match = String(previous).match(/\/\/(?:[^/@]*:)([^@]*)@/);
   const password = match ? decodeURIComponent(match[1]) : '';
-  return url.replace('••••', password);
+  if (!password) return url;
+  return url.replaceAll('••••', password);
 }
 
 export function playback(base, streamId) {
@@ -124,12 +128,13 @@ export function streamMap(cameras) {
   return streams;
 }
 
-export function go2rtcDocument(cameras, candidates) {
+export function go2rtcDocument(cameras, candidates, apiPassword) {
   return {
     log: { level: 'info' },
     api: {
       listen: '127.0.0.1:1984',
-      origin: '*',
+      username: 'prism',
+      password: apiPassword,
     },
     rtsp: {
       listen: '127.0.0.1:8554',
@@ -175,10 +180,13 @@ export function normalize(input, cameras, existing) {
   if (type === 'generic') {
     const incoming = cleanText(body.url, 1000);
     const subIncoming = cleanText(body.subUrl, 1000);
-    camera.url = restoreSecret(incoming, existing?.url) || existing?.url || '';
     if (!incoming) camera.url = existing?.url || '';
+    else camera.url = restoreSecret(incoming, existing?.url);
     if (subIncoming.includes('••••')) camera.subUrl = restoreSecret(subIncoming, existing?.subUrl);
     else camera.subUrl = subIncoming || '';
+    if (String(camera.url).includes('••••') || String(camera.subUrl || '').includes('••••')) {
+      throw new Error('Re-enter the password when the camera address changes');
+    }
     if (!camera.url) throw new Error('Paste an RTSP URL');
     delete camera.password;
   } else if (!camera.password && !existing?.password) {

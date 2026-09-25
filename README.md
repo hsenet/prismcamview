@@ -20,6 +20,8 @@ The Cameras page also shows the go2rtc version. When GitHub has a newer release,
 
 Phones on the same Wi-Fi use the LAN address printed at startup. Allow inbound TCP **8787** and TCP/UDP **8555** through Windows Firewall when you connect a phone.
 
+The server speaks plain HTTP and is meant for that local network. Put a reverse proxy with TLS in front of it if a browser or phone reaches it from anywhere else.
+
 ## Docker
 
 One image runs the wall and go2rtc. Put the host machine’s LAN address in `PRISMCAM_PUBLIC_HOST` so phones receive a usable WebRTC address.

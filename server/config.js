@@ -14,6 +14,16 @@ export const BIN_DIR = path.join(DATA_DIR, 'bin');
 export const VERSION_PATH = path.join(DATA_DIR, 'go2rtc.version');
 
 export const PINNED_GO2RTC = 'v1.9.14';
+
+// SHA-256 of the v1.9.14 GitHub release assets this server can install.
+export const PINNED_GO2RTC_SHA256 = {
+  'go2rtc_win64.zip': 'dd4167d75cb04abe618855b7c71f8658bd009f60c1a71835d134d2c11c939907',
+  'go2rtc_win_arm64.zip': '814be0f6d8669025c7bccdd1f026ffaf613abae5352239f4ec84de543b94594a',
+  go2rtc_linux_amd64: '32d616af226bd731678ffde328b94cfb94e30339bfefc469cfb76323144615a6',
+  go2rtc_linux_arm64: '359fabade8a7a51e81a55fe6df6b0ef81764a5e1d63179577534eaaa71904b50',
+  'go2rtc_mac_arm64.zip': '919b78adc759d6b3883d1e1b2ac915ac0985bb903ff1897b4d228527bd64690c',
+  'go2rtc_mac_amd64.zip': '9b0b9a27a4dc3a5b8b93376e7e8fc2787c6af624a512842622be84aec0171c7a',
+};
 export const DEFAULT_PORT = 8787;
 
 export function go2rtcPackage() {

@@ -32,14 +32,25 @@ function cameraHosts() {
     const raw = camera.host || '';
     if (raw && !raw.includes('/')) hosts.push(raw);
     if (camera.url) {
-      try { hosts.push(new URL(camera.url).hostname); } catch { /* skip a partial URL */ }
+      try {
+        const hostname = new URL(camera.url).hostname;
+        if (hostname) hosts.push(hostname);
+      } catch { /* skip a partial URL */ }
     }
   }
   return hosts;
 }
 
 async function persistGo2rtc() {
-  await go2rtc.writeYaml(go2rtcDocument(cameras, webrtcCandidates(config, cameraHosts())));
+  await go2rtc.writeYaml(go2rtcDocument(cameras, webrtcCandidates(config, cameraHosts()), go2rtc.apiPassword));
+}
+
+let cameraQueue = Promise.resolve();
+
+function withCameras(task) {
+  const run = cameraQueue.then(task, task);
+  cameraQueue = run.then(() => {}, () => {});
+  return run;
 }
 
 async function refreshStreams(names) {
@@ -78,18 +89,50 @@ function json(res, status, body) {
   res.end(payload);
 }
 
+const SESSION_COOKIE = 'prism_session';
+
+function sessionCookie() {
+  return `${SESSION_COOKIE}=${encodeURIComponent(config.token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`;
+}
+
+function tokenFrom(req) {
+  const header = req.headers.authorization || '';
+  if (header.startsWith('Bearer ')) return header.slice(7).trim();
+  const cookie = req.headers.cookie || '';
+  const match = cookie.match(new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([^;]+)`));
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return '';
+  }
+}
+
+function tokenMatches(token) {
+  const left = Buffer.from(token);
+  const right = Buffer.from(config.token);
+  if (left.length !== right.length || left.length === 0) return false;
+  return timingSafeEqual(left, right);
+}
+
 function loopback(req) {
   const address = req.socket.remoteAddress || '';
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
+function crossSite(req) {
+  if (req.headers['sec-fetch-site'] === 'cross-site') return true;
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  try {
+    return new URL(origin).host !== req.headers.host;
+  } catch {
+    return true;
+  }
+}
+
 function authorized(req) {
-  const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  const left = Buffer.from(token);
-  const right = Buffer.from(config.token);
-  if (left.length !== right.length || left.length === 0) return false;
-  return timingSafeEqual(left, right);
+  return tokenMatches(tokenFrom(req));
 }
 
 function readBody(req) {
@@ -126,10 +169,11 @@ function present(camera, req, info) {
 
 async function handleApi(req, res, pathname) {
   if (req.method === 'GET' && pathname === '/api/v1/session') {
-    if (!loopback(req)) {
+    if (!loopback(req) || crossSite(req)) {
       json(res, 401, { error: 'Enter the API token from data/config.yaml' });
       return;
     }
+    res.setHeader('Set-Cookie', sessionCookie());
     json(res, 200, { token: config.token });
     return;
   }
@@ -138,6 +182,7 @@ async function handleApi(req, res, pathname) {
     json(res, 401, { error: 'Sign in with the API token' });
     return;
   }
+  res.setHeader('Set-Cookie', sessionCookie());
 
   if (req.method === 'GET' && pathname === '/api/v1/presets') {
     json(res, 200, { types: types() });
@@ -186,27 +231,34 @@ async function handleApi(req, res, pathname) {
   if (req.method === 'POST' && pathname === '/api/v1/cameras/test') {
     const body = await readBody(req);
     try {
-      const existing = cameras.find((camera) => camera.id === body.id);
-      const camera = normalize(body, cameras, existing);
-      const sources = buildSources(camera);
-      await go2rtc.replaceStream('__probe', sources.main);
-      const picture = await go2rtc.snapshot('__probe');
+      const picture = await withCameras(async () => {
+        const existing = cameras.find((camera) => camera.id === body.id);
+        const camera = normalize(body, cameras, existing);
+        const sources = buildSources(camera);
+        try {
+          await go2rtc.replaceStream('__probe', sources.main);
+          return await go2rtc.snapshot('__probe');
+        } finally {
+          await go2rtc.removeStream('__probe').catch(() => {});
+          await persistGo2rtc().catch(() => {});
+        }
+      });
       json(res, 200, { ok: true, snapshot: `data:image/jpeg;base64,${picture.toString('base64')}` });
     } catch (error) {
       json(res, 200, { ok: false, error: error.message || 'Camera did not answer' });
-    } finally {
-      await go2rtc.removeStream('__probe').catch(() => {});
-      await persistGo2rtc().catch(() => {});
     }
     return;
   }
 
   if (req.method === 'POST' && pathname === '/api/v1/cameras') {
     const body = await readBody(req);
-    const camera = normalize(body, cameras, null);
-    cameras = [...cameras, camera];
-    await writeCameras(cameras);
-    await refreshStreams([camera.id, `${camera.id}_sub`]);
+    const camera = await withCameras(async () => {
+      const created = normalize(body, cameras, null);
+      cameras = [...cameras, created];
+      await writeCameras(cameras);
+      await refreshStreams([created.id, `${created.id}_sub`]);
+      return created;
+    });
     const info = await go2rtc.listStreams();
     json(res, 201, present(camera, req, info));
     return;
@@ -227,18 +279,26 @@ async function handleApi(req, res, pathname) {
     }
     if (req.method === 'PUT') {
       const body = await readBody(req);
-      const camera = normalize(body, cameras, cameras[index]);
-      cameras = cameras.map((item) => (item.id === id ? camera : item));
-      await writeCameras(cameras);
-      await refreshStreams([id, `${id}_sub`]);
+      const camera = await withCameras(async () => {
+        const current = cameras.find((item) => item.id === id);
+        if (!current) throw new Error('Camera not found');
+        const updated = normalize(body, cameras, current);
+        cameras = cameras.map((item) => (item.id === id ? updated : item));
+        await writeCameras(cameras);
+        await refreshStreams([id, `${id}_sub`]);
+        return updated;
+      });
       const info = await go2rtc.listStreams();
       json(res, 200, present(camera, req, info));
       return;
     }
     if (req.method === 'DELETE') {
-      cameras = cameras.filter((camera) => camera.id !== id);
-      await writeCameras(cameras);
-      await refreshStreams([id, `${id}_sub`]);
+      await withCameras(async () => {
+        if (!cameras.some((camera) => camera.id === id)) throw new Error('Camera not found');
+        cameras = cameras.filter((camera) => camera.id !== id);
+        await writeCameras(cameras);
+        await refreshStreams([id, `${id}_sub`]);
+      });
       json(res, 200, { ok: true });
       return;
     }
@@ -252,6 +312,8 @@ const MIME = {
   '.css': 'text/css; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
   '.ico': 'image/x-icon',
 };
 
@@ -280,8 +342,28 @@ async function handleStatic(req, res, pathname) {
   }
 }
 
+function upstreamPath(url) {
+  const next = `${url.pathname.slice(4)}${url.search}` || '/';
+  return next.startsWith('/') ? next : `/${next}`;
+}
+
+const PLAYER_FILES = new Set(['/video-stream.js', '/video-rtc.js']);
+
+function playbackAccess(method, pathname) {
+  if ((method === 'GET' || method === 'HEAD') && PLAYER_FILES.has(pathname)) return 'public';
+  if (pathname === '/api/ws' && (method === 'GET' || method === 'HEAD')) return 'private';
+  if (pathname === '/api/webrtc' && (method === 'GET' || method === 'POST')) return 'private';
+  if (
+    (pathname === '/api/stream.m3u8' || pathname === '/api/stream.mp4' || pathname === '/api/frame.jpeg' || pathname === '/api/frame.mp4')
+    && (method === 'GET' || method === 'HEAD')
+  ) return 'private';
+  if (pathname.startsWith('/api/hls/') && !pathname.includes('..') && (method === 'GET' || method === 'HEAD')) return 'private';
+  return '';
+}
+
 function proxyWeb(req, res) {
-  const headers = { ...req.headers, host: '127.0.0.1:1984' };
+  const headers = { ...req.headers, host: '127.0.0.1:1984', authorization: go2rtc.basicAuth };
+  delete headers.cookie;
   const upstream = http.request({
     hostname: '127.0.0.1',
     port: 1984,
@@ -289,7 +371,11 @@ function proxyWeb(req, res) {
     method: req.method,
     headers,
   }, (upstreamRes) => {
-    res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
+    const headersOut = { ...upstreamRes.headers };
+    delete headersOut['access-control-allow-origin'];
+    delete headersOut['access-control-allow-headers'];
+    delete headersOut['access-control-allow-methods'];
+    res.writeHead(upstreamRes.statusCode || 502, headersOut);
     upstreamRes.pipe(res);
   });
   upstream.on('error', () => {
@@ -308,9 +394,12 @@ function proxyWs(req, socket, head) {
     let raw = `${req.method} ${req.url} HTTP/1.1\r\n`;
     for (const [key, value] of Object.entries(req.headers)) {
       if (key.toLowerCase() === 'host') continue;
+    if (key.toLowerCase() === 'authorization') continue;
+    if (key.toLowerCase() === 'cookie') continue;
       const items = Array.isArray(value) ? value : [value];
       for (const item of items) raw += `${key}: ${item}\r\n`;
     }
+    raw += `authorization: ${go2rtc.basicAuth}\r\n`;
     raw += 'host: 127.0.0.1:1984\r\n\r\n';
     upstream.write(raw);
     if (head?.length) upstream.write(head);
@@ -325,14 +414,26 @@ function proxyWs(req, socket, head) {
   socket.on('error', fail);
 }
 
-function cors(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "media-src 'self' blob: data:",
+  "connect-src 'self'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+].join('; ');
+
+function security(res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Content-Security-Policy', CSP);
 }
 
 const server = http.createServer(async (req, res) => {
-  cors(res);
+  security(res);
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
@@ -345,12 +446,18 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (url.pathname === '/rtc' || url.pathname.startsWith('/rtc/')) {
-      req.url = url.pathname.slice(4) + url.search || '/';
-      if (!req.url.startsWith('/')) req.url = `/${req.url}`;
+      const target = new URL(upstreamPath(url), 'http://localhost');
+      const access = playbackAccess(req.method, target.pathname);
+      if (!access || (access === 'private' && !authorized(req))) {
+        res.writeHead(401, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Sign in with the API token');
+        return;
+      }
+      req.url = `${target.pathname}${target.search}`;
       proxyWeb(req, res);
       return;
     }
-    await handleStatic(req, res, decodeURIComponent(url.pathname));
+    await handleStatic(req, res, url.pathname);
   } catch (error) {
     if (!res.headersSent) json(res, 400, { error: error.message || 'Request failed' });
   }
@@ -362,8 +469,12 @@ server.on('upgrade', (req, socket, head) => {
     socket.destroy();
     return;
   }
-  req.url = `${url.pathname.slice(4)}${url.search}` || '/';
-  if (!req.url.startsWith('/')) req.url = `/${req.url}`;
+  const target = new URL(upstreamPath(url), 'http://localhost');
+  if (playbackAccess(req.method || 'GET', target.pathname) !== 'private' || !authorized(req)) {
+    socket.destroy();
+    return;
+  }
+  req.url = `${target.pathname}${target.search}`;
   proxyWs(req, socket, head);
 });
 

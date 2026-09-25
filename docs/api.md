@@ -14,7 +14,9 @@ Authorization: Bearer <token>
 
 The token is created in `data/config.yaml` on the PC that runs PrismCam. RTSP passwords are never included in a response.
 
-`GET /api/v1/session` returns `{ "token" }` only when the request comes from `127.0.0.1`. Other devices get `401`.
+`GET /api/v1/session` returns `{ "token" }` only when the request comes from `127.0.0.1` and the same site. A page on another website cannot read it. A successful sign-in also sets an `HttpOnly` `SameSite=Strict` cookie named `prism_session`. The browser player sends that cookie when it opens a stream. Other sites do not.
+
+The player scripts are public. Stream media under `/rtc/api/` requires the bearer token or the cookie. Creating, deleting, or listing streams is refused. The embedded restreamer itself listens only on `127.0.0.1` and requires its own password, which the Node server holds.
 
 ## Cameras
 
@@ -52,7 +54,7 @@ Use `streams.sub` for a grid and `streams.main` when the tile is opened. Play We
 - `hls` — `/rtc/api/stream.m3u8?src=<id>&mp4` (H264 and H265)
 - `snapshot` — `/rtc/api/frame.jpeg?src=<id>`
 
-Those playback paths are proxied to the embedded restreamer. WebRTC media uses UDP and TCP port **8555** on the server PC, which the phone must be able to reach.
+Those playback paths are proxied to the embedded restreamer and require the same sign-in as the rest of the API. WebRTC media uses UDP and TCP port **8555** on the server PC, which the phone must be able to reach.
 
 `GET /api/v1/cameras/:id` returns the same object plus the fields the admin form edits: `pathStyle` (`hikvision`, `h264`, `custom` for Ezviz), `path`, `subPath`, and masked `url` / `subUrl` for a raw RTSP camera.
 
