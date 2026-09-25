@@ -1,0 +1,15 @@
+services:
+  prismcam:
+    build: .
+    image: prismcam
+    container_name: prismcam
+    restart: unless-stopped
+    ports:
+      # Published for phones on the LAN. Do not expose the host to the internet.
+      - "8787:8787"
+      - "8555:8555/tcp"
+      - "8555:8555/udp"
+    environment:
+      PRISMCAM_PUBLIC_HOST: ${PRISMCAM_PUBLIC_HOST:-}
+    volumes:
+      - ./data:/app/data

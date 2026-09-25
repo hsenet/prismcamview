@@ -1,0 +1,16 @@
+# Copy to data/cameras.yaml. That file is gitignored and holds real passwords.
+cameras:
+  - id: front-door
+    name: Front door
+    type: hikvision
+    host: 192.168.1.10
+    port: 554
+    username: admin
+    password: EXAMPLE_PASSWORD_DO_NOT_USE
+    channel: 1
+
+  - id: driveway
+    name: Driveway
+    type: generic
+    url: rtsp://user:EXAMPLE_PASSWORD_DO_NOT_USE@192.168.1.20:554/stream1
+    subUrl: rtsp://user:EXAMPLE_PASSWORD_DO_NOT_USE@192.168.1.20:554/stream2
