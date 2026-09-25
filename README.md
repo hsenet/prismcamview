@@ -1,4 +1,4 @@
-# PrismCam
+# App5 PrismCam
 
 A local CCTV wall. An embedded [go2rtc](https://github.com/AlexxIT/go2rtc) process pulls your RTSP cameras, and the browser plays them with WebRTC (then MSE, then HLS). The same HTTP API is what a later Android or iOS app will use.
 
